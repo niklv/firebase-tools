@@ -53,6 +53,7 @@ module.exports = new Command("deploy")
       '(e.g. "--only functions:group1.subgroup1,functions:group2)"'
   )
   .option("--except <targets>", 'deploy to all targets except specified (e.g. "database")')
+  .option("--retry <times>", "retry deploying failed functions <times> before failing")
   .before(requireConfig)
   .before(function(options) {
     options.filteredTargets = filterTargets(options, VALID_TARGETS);

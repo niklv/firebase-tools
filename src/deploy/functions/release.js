@@ -120,11 +120,28 @@ var printTooManyOps = function(projectId) {
   deployments = []; // prevents analytics tracking of deployments
 };
 
-module.exports = function(context, options, payload) {
-  if (!options.config.has("functions")) {
-    return Promise.resolve();
+function releaseFunctions(context, options, uploadedNames, functionsInfo, attempt) {
+  // Handle retries
+  var maxRetries = Number(options.retry || 1);
+  if (attempt > maxRetries) {
+    logger.info("\n\n");
+    utils.logWarning(
+      clc.bold.yellow("functions: ") + `Failed to deploy all functions after ${maxRetries} times...`
+    );
+    return;
+  }
+  if (attempt > 0) {
+    const suffix = attempt === 1 ? "st" : attempt === 2 ? "nd" : attempt === 3 ? "rd" : "th";
+    logger.info("\n\n");
+    utils.logBullet(
+      clc.bold.cyan("functions: ") +
+        `trying to deploy failed functions for the ${attempt}${suffix} time...`
+    );
   }
 
+  // Ensure globals are reset...
+  deployments = [];
+  failedDeployments = [];
   var projectId = context.projectId;
   var sourceUrl = context.uploadUrl;
   var appEngineLocation = getAppEngineLocation(context.firebaseConfig);
@@ -133,26 +150,11 @@ module.exports = function(context, options, payload) {
     "gs://" + "staging." + context.firebaseConfig.storageBucket + "/firebase-functions-source";
   // Used in CLI releases v3.3.0 and prior
   var legacySourceUrlOne = "gs://" + projectId + "-gcf/" + projectId;
-  var functionsInfo = helper.getFunctionsInfo(payload.functions.triggers, projectId);
-  functionsInfo = functionsInfo.map((fn) => {
-    if (
-      fn.eventTrigger &&
-      fn.schedule &&
-      fn.eventTrigger.eventType === "google.pubsub.topic.publish"
-    ) {
-      const [, , , region, , funcName] = fn.name.split("/");
-      const newResource = `${fn.eventTrigger.resource}/firebase-schedule-${funcName}-${region}`;
-      fn.eventTrigger.resource = newResource;
-    }
-    return fn;
-  });
-  var uploadedNames = _.map(functionsInfo, "name");
   var runtime = context.runtimeChoice;
   var functionFilterGroups = helper.getFilterGroups(options);
   var deleteReleaseNames;
   var existingScheduledFunctions;
 
-  delete payload.functions;
   return Promise.resolve(context.existingFunctions)
     .then(function(existingFunctions) {
       var pluckName = function(functionObject) {
@@ -484,6 +486,10 @@ module.exports = function(context, options, payload) {
         .map("value")
         .value();
       failedDeployments = failedCalls.map((error) => _.get(error, "context.function", ""));
+      var hasQuotaError = failedCalls.some(
+        (error) => _.get(error, "context.response.statusCode") === 429
+      );
+      var allDeploymentsFailed = deployments.length === failedDeployments.length;
 
       return _fetchTriggerUrls(projectId, successfulCalls, sourceUrl)
         .then(function() {
@@ -510,6 +516,35 @@ module.exports = function(context, options, payload) {
             for (let i = 0; i < sortedFailedDeployments.length; i++) {
               logger.info(`\t${sortedFailedDeployments[i]}`);
             }
+
+            // Try redeploying failed functions
+            if (
+              !allDeploymentsFailed &&
+              !hasQuotaError &&
+              !!options.retry &&
+              attempt <= maxRetries
+            ) {
+              // Reconstruct names of functions for the current project
+              const fullFunctionsNames = failedDeployments.map((name) =>
+                ["projects", projectId, "locations", "us-central1", "functions", name].join("/")
+              );
+              // Update the options to "--only" deploy the functions to redeploy
+              // because this is used to compute the filter groups and prevent deletions
+              // They must be mapped as functions:<namespace>.<function-name>,...
+              const updatedOpts = Object.assign({}, options, {
+                only: failedDeployments
+                  .map((name) => `functions:${name.split("-").join(".")}`)
+                  .join(","),
+              });
+              return releaseFunctions(
+                context,
+                updatedOpts,
+                fullFunctionsNames,
+                functionsInfo,
+                attempt + 1
+              );
+            }
+
             logger.info("\n\nTo try redeploying those functions, run:");
             logger.info(
               "    " +
@@ -522,4 +557,28 @@ module.exports = function(context, options, payload) {
           }
         });
     });
+}
+
+module.exports = function(context, options, payload) {
+  if (!options.config.has("functions")) {
+    return Promise.resolve();
+  }
+
+  let functionsInfo = helper.getFunctionsInfo(payload.functions.triggers, context.projectId);
+  functionsInfo = functionsInfo.map((fn) => {
+    if (
+      fn.eventTrigger &&
+      fn.schedule &&
+      fn.eventTrigger.eventType === "google.pubsub.topic.publish"
+    ) {
+      const [, , , region, , funcName] = fn.name.split("/");
+      const newResource = `${fn.eventTrigger.resource}/firebase-schedule-${funcName}-${region}`;
+      fn.eventTrigger.resource = newResource;
+    }
+    return fn;
+  });
+  var uploadedNames = _.map(functionsInfo, "name");
+
+  delete payload.functions;
+  return releaseFunctions(context, options, uploadedNames, functionsInfo, 0);
 };
