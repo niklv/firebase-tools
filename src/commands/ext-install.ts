@@ -5,6 +5,7 @@ import * as ora from "ora";
 import TerminalRenderer = require("marked-terminal");
 
 import * as askUserForConsent from "../extensions/askUserForConsent";
+import { displayExtInstallInfo } from "../extensions/displayExtensionInfo";
 import * as checkProjectBilling from "../extensions/checkProjectBilling";
 import { Command } from "../command";
 import { FirebaseError } from "../error";
@@ -31,7 +32,7 @@ import { requirePermissions } from "../requirePermissions";
 import * as utils from "../utils";
 import * as logger from "../logger";
 import { promptOnce } from "../prompt";
-import * as previews from "../previews";
+import { previews } from "../previews";
 
 marked.setOptions({
   renderer: new TerminalRenderer(),
@@ -90,13 +91,7 @@ async function installExtension(options: InstallExtensionOptions): Promise<void>
         }
       }
     }
-    const response = await extensionsApi.createInstance(
-      projectId,
-      instanceId,
-      source,
-      params,
-      serviceAccountEmail
-    );
+    await extensionsApi.createInstance(projectId, instanceId, source, params, serviceAccountEmail);
     spinner.stop();
 
     utils.logLabeledSuccess(
@@ -138,13 +133,14 @@ async function installExtension(options: InstallExtensionOptions): Promise<void>
  */
 export default new Command("ext:install [extensionName]")
   .description(
-    "install an official extension if [extensionName] or [extensionName@version] is provided;" +
-      previews.extdev
-      ? "install a local extension if [localPathOrUrl] or [url#root] is provided;"
-      : "" + "or run with `-i` to see all available extensions."
+    "install an official extension if [extensionName] or [extensionName@version] is provided; " +
+      (previews.extdev
+        ? "install a local extension if [localPathOrUrl] or [url#root] is provided; "
+        : "") +
+      "or run with `-i` to see all available extensions."
   )
   .option("--params <paramsFile>", "name of params variables file with .env format.")
-  .before(requirePermissions, ["firebasemods.instances.create"])
+  .before(requirePermissions, ["firebaseextensions.instances.create"])
   .before(ensureExtensionsApiEnabled)
   .action(async (extensionName: string, options: any) => {
     const projectId = getProjectId(options, false);
@@ -154,7 +150,7 @@ export default new Command("ext:install [extensionName]")
       if (options.interactive) {
         learnMore = true;
         extensionName = await promptForOfficialExtension(
-          "Which official extension do you want to install?\n" +
+          "Which official extension do you wish to install?\n" +
             "  Select an extension, then press Enter to learn more."
         );
       } else {
@@ -170,17 +166,19 @@ export default new Command("ext:install [extensionName]")
     let source;
     try {
       const registryEntry = await resolveRegistryEntry(name);
+      const sourceUrl = resolveSourceUrl(registryEntry, name, version);
+      source = await extensionsApi.getSource(sourceUrl);
+      displayExtInstallInfo(extensionName, source);
       const audienceConsent = await promptForAudienceConsent(registryEntry);
       if (!audienceConsent) {
         logger.info("Install cancelled.");
         return;
       }
-      const sourceUrl = resolveSourceUrl(registryEntry, name, version);
-      source = await extensionsApi.getSource(sourceUrl);
     } catch (err) {
       if (previews.extdev) {
         try {
           source = await createSourceFromLocation(projectId, extensionName);
+          displayExtInstallInfo(extensionName, source);
         } catch (err) {
           throw new FirebaseError(
             `Unable to find official extension named ${clc.bold(extensionName)}, ` +
@@ -211,7 +209,7 @@ export default new Command("ext:install [extensionName]")
         const confirm = await promptOnce({
           type: "confirm",
           default: true,
-          message: "Do you want to install this extension?",
+          message: "Do you wish to install this extension?",
         });
         if (!confirm) {
           return;

@@ -174,6 +174,10 @@ function releaseFunctions(context, options, uploadedNames, functionsInfo, attemp
       deleteReleaseNames = functionFilterGroups.length > 0 ? releaseNames : existingNames;
       helper.logFilters(existingNames, releaseNames, functionFilterGroups);
 
+      const defaultEnvVariables = {
+        FIREBASE_CONFIG: JSON.stringify(context.firebaseConfig),
+      };
+
       // Create functions
       _.chain(uploadedNames)
         .difference(existingNames)
@@ -214,6 +218,7 @@ function releaseFunctions(context, options, uploadedNames, functionsInfo, attemp
                   availableMemoryMb: functionInfo.availableMemoryMb,
                   timeout: functionInfo.timeout,
                   maxInstances: functionInfo.maxInstances,
+                  environmentVariables: defaultEnvVariables,
                 })
                 .then((createRes) => {
                   if (_.has(functionTrigger, "httpsTrigger")) {
@@ -289,6 +294,11 @@ function releaseFunctions(context, options, uploadedNames, functionsInfo, attemp
               timeout: functionInfo.timeout,
               runtime: runtime,
               maxInstances: functionInfo.maxInstances,
+              environmentVariables: _.assign(
+                {},
+                existingFunction.environmentVariables,
+                defaultEnvVariables
+              ),
             };
             utils.logBullet(
               clc.bold.cyan("functions: ") +
@@ -549,7 +559,13 @@ function releaseFunctions(context, options, uploadedNames, functionsInfo, attemp
             logger.info(
               "    " +
                 clc.bold("firebase deploy --only ") +
-                clc.bold(sortedFailedDeployments.map((name) => `functions:${name}`).join(","))
+                clc.bold('"') +
+                clc.bold(
+                  sortedFailedDeployments
+                    .map((name) => `functions:${name.replace(/-/g, ".")}`)
+                    .join(",")
+                ) +
+                clc.bold('"')
             );
             logger.info("\n\nTo continue deploying other features (such as database), run:");
             logger.info("    " + clc.bold("firebase deploy --except functions"));
